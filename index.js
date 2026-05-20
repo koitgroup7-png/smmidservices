@@ -1,5 +1,6 @@
 // Load environment variables from .env file
 require("dotenv").config();
+const http = require("http");
 const { Telegraf, Markup, session } = require("telegraf");
 const Database = require("better-sqlite3");
 
@@ -1860,6 +1861,25 @@ bot.action("support", (ctx) => {
   ctx.answerCbQuery();
   ctx.reply("🆘 Support: Contact admin.");
 });
+
+
+// Render/UptimeRobot health server
+// Render Web Service needs an open HTTP port, otherwise deploy will fail with "No open ports detected"
+const PORT = process.env.PORT || 3000;
+
+http
+  .createServer((req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      return res.end("OK");
+    }
+
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("SmmidServices Bot Running");
+  })
+  .listen(PORT, () => {
+    console.log(`Health server running on port ${PORT}`);
+  });
 
 // Start bot polling
 bot.launch();
