@@ -222,6 +222,113 @@ function mainMenu() {
   ]);
 }
 
+// Customer navigation/back helpers.
+// Callback pages edit the same bot message so old menu messages do not pile up.
+function backToMainKeyboard() {
+  return Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back to Main Menu", "back_main")]]);
+}
+
+function productBackKeyboard(productId = null) {
+  const rows = [];
+  if (productId) rows.push([Markup.button.callback("⬅️ Back to Product", `view_product_${productId}`)]);
+  rows.push([Markup.button.callback("⬅️ Back to Products", "buy_product")]);
+  rows.push([Markup.button.callback("🏠 Main Menu", "back_main")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+async function editOrReply(ctx, text, keyboard = null) {
+  try {
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+      return await ctx.editMessageText(text, keyboard || {});
+    }
+  } catch (error) {
+    if (!String(error.message).includes("message is not modified")) {
+      console.error("edit message failed:", error.message);
+    }
+  }
+
+  return ctx.reply(text, keyboard || {});
+}
+
+async function showMainMenu(ctx) {
+  const user = createOrGetUser(ctx);
+  return editOrReply(
+    ctx,
+    `Welcome, ${user.first_name || "User"}!\n\n` +
+      `Your profile is ready.\n` +
+      `Balance: ${Number(user.balance).toFixed(2)} USD`,
+    mainMenu()
+  );
+}
+
+async function showProductList(ctx) {
+  const products = db
+    .prepare("SELECT * FROM products WHERE status = 'active' ORDER BY id ASC")
+    .all();
+
+  if (products.length === 0) {
+    return editOrReply(ctx, "❌ No products available right now.", backToMainKeyboard());
+  }
+
+  const buttons = products.map((product) => [
+    Markup.button.callback(
+      `${product.name} - ${Number(product.price).toFixed(2)} USD | Stock: ${getStockCount(product.id)}`,
+      `view_product_${product.id}`
+    )
+  ]);
+
+  buttons.push([Markup.button.callback("⬅️ Back to Main Menu", "back_main")]);
+  return editOrReply(ctx, "🛒 Select a product:", Markup.inlineKeyboard(buttons));
+}
+
+async function showProductDetails(ctx, productId) {
+  const product = db
+    .prepare("SELECT * FROM products WHERE id = ? AND status = 'active'")
+    .get(productId);
+
+  if (!product) {
+    return editOrReply(ctx, "❌ Product not found.", productBackKeyboard());
+  }
+
+  const stockCount = getStockCount(productId);
+
+  if (isAreaCodeProduct(product.name)) {
+    const buttons = AREA_CODES.map((areaCode) => [
+      Markup.button.callback(
+        `${areaCode} | Stock: ${getAreaStockCount(productId, areaCode)}`,
+        `area_${product.id}_${areaCode}`
+      )
+    ]);
+
+    buttons.push([Markup.button.callback("⬅️ Back to Products", "buy_product")]);
+    buttons.push([Markup.button.callback("🏠 Main Menu", "back_main")]);
+
+    return editOrReply(
+      ctx,
+      `📦 Product Details\n\n` +
+        `Name: ${product.name}\n` +
+        `Price: ${Number(product.price).toFixed(2)} USD each\n` +
+        `Total Available Stock: ${stockCount}\n\n` +
+        `Please select area code:`,
+      Markup.inlineKeyboard(buttons)
+    );
+  }
+
+  return editOrReply(
+    ctx,
+    `📦 Product Details\n\n` +
+      `Name: ${product.name}\n` +
+      `Price: ${Number(product.price).toFixed(2)} USD each\n` +
+      `Available Stock: ${stockCount}\n\n` +
+      `Click Buy Now, then send quantity.`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("✅ Buy Now", `ask_qty_${product.id}`)],
+      [Markup.button.callback("⬅️ Back to Products", "buy_product")],
+      [Markup.button.callback("🏠 Main Menu", "back_main")]
+    ])
+  );
+}
+
 // Admin command guide shown by /admin
 function adminHelpText() {
   return (
@@ -262,20 +369,12 @@ function adminHelpText() {
 }
 
 // /start creates user profile and shows the main menu
-bot.start((ctx) => {
-  const user = createOrGetUser(ctx);
-
-  ctx.reply(
-    `Welcome, ${user.first_name || "User"}!\n\n` +
-      `Your profile is ready.\n` +
-      `Balance: ${Number(user.balance).toFixed(2)} USD`,
-    mainMenu()
-  );
+bot.start(async (ctx) => {
+  await showMainMenu(ctx);
 });
 
-bot.command("menu", (ctx) => {
-  createOrGetUser(ctx);
-  ctx.reply("Main Menu", mainMenu());
+bot.command("menu", async (ctx) => {
+  await showMainMenu(ctx);
 });
 
 bot.command("admin", (ctx) => {
@@ -286,27 +385,43 @@ bot.command("admin", (ctx) => {
   ctx.reply(adminHelpText());
 });
 
-bot.action("my_profile", (ctx) => {
+bot.action("back_main", async (ctx) => {
+  if (blockGuard(ctx)) return;
+  await ctx.answerCbQuery();
+  await showMainMenu(ctx);
+});
+
+bot.action("back_products", async (ctx) => {
+  if (blockGuard(ctx)) return;
+  await ctx.answerCbQuery();
+  await showProductList(ctx);
+});
+
+bot.action("my_profile", async (ctx) => {
   if (blockGuard(ctx)) return;
   const user = createOrGetUser(ctx);
 
-  ctx.answerCbQuery();
-  ctx.reply(
+  await ctx.answerCbQuery();
+  await editOrReply(
+    ctx,
     `👤 My Profile\n\n` +
       `User ID: ${user.telegram_id}\n` +
       `Username: @${user.username || "N/A"}\n` +
       `Balance: ${Number(user.balance).toFixed(2)} USD\n` +
-      `Status: ${user.status}`
+      `Status: ${user.status}`,
+    backToMainKeyboard()
   );
 });
 
-bot.action("add_fund", (ctx) => {
+bot.action("add_fund", async (ctx) => {
   if (blockGuard(ctx)) return;
   createOrGetUser(ctx);
 
-  ctx.answerCbQuery();
-  ctx.reply(
-    "💰 Add Fund\n\nPlease send amount using this format:\n\n/addfund 10"
+  await ctx.answerCbQuery();
+  await editOrReply(
+    ctx,
+    "💰 Add Fund\n\nPlease send amount using this format:\n\n/addfund 10",
+    backToMainKeyboard()
   );
 });
 
@@ -329,12 +444,14 @@ bot.command("addfund", (ctx) => {
     Markup.inlineKeyboard([
       [Markup.button.callback("1️⃣ Binance Pay ID", `pay_binance_${amount}`)],
       [Markup.button.callback("2️⃣ USDT Address", `pay_usdt_${amount}`)],
-      [Markup.button.callback("3️⃣ BTC Address", `pay_btc_${amount}`)]
+      [Markup.button.callback("3️⃣ BTC Address", `pay_btc_${amount}`)],
+      [Markup.button.callback("⬅️ Back to Main Menu", "back_main")]
     ])
   );
 });
 
-bot.action(/^pay_(binance|usdt|btc)_(.+)$/, (ctx) => {
+bot.action(/^pay_(binance|usdt|btc)_(.+)$/, async (ctx) => {
+  if (blockGuard(ctx)) return;
   const method = ctx.match[1];
   const amount = Number(ctx.match[2]);
 
@@ -348,13 +465,15 @@ bot.action(/^pay_(binance|usdt|btc)_(.+)$/, (ctx) => {
     paymentText = `BTC Address: ${BTC_ADDRESS}`;
   }
 
-  ctx.answerCbQuery();
-  ctx.reply(
+  await ctx.answerCbQuery();
+  await editOrReply(
+    ctx,
     `✅ Payment Method Selected\n\n` +
       `Amount: ${amount} USD\n` +
       `${paymentText}\n\n` +
       `After payment, submit your TXID using this format:\n\n` +
-      `/txid YOUR_TRANSACTION_ID`
+      `/txid YOUR_TRANSACTION_ID`,
+    backToMainKeyboard()
   );
 
   ctx.session = ctx.session || {};
@@ -1296,84 +1415,23 @@ bot.command("cutbalance", (ctx) => {
 // =====================
 
 // Customer opens product list
-bot.action("buy_product", (ctx) => {
+bot.action("buy_product", async (ctx) => {
   if (blockGuard(ctx)) return;
   createOrGetUser(ctx);
 
-  const products = db
-    .prepare("SELECT * FROM products WHERE status = 'active' ORDER BY id ASC")
-    .all();
-
-  ctx.answerCbQuery();
-
-  if (products.length === 0) {
-    return ctx.reply("❌ No products available right now.");
-  }
-
-  const buttons = products.map((product) => [
-    Markup.button.callback(
-      `${product.name} - ${product.price} USD | Stock: ${getStockCount(
-        product.id
-      )}`,
-      `view_product_${product.id}`
-    )
-  ]);
-
-  ctx.reply("🛒 Select a product:", Markup.inlineKeyboard(buttons));
+  await ctx.answerCbQuery();
+  await showProductList(ctx);
 });
 
-bot.action(/^view_product_(\d+)$/, (ctx) => {
+bot.action(/^view_product_(\d+)$/, async (ctx) => {
   if (blockGuard(ctx)) return;
   createOrGetUser(ctx);
 
-  const productId = Number(ctx.match[1]);
-
-  const product = db
-    .prepare("SELECT * FROM products WHERE id = ? AND status = 'active'")
-    .get(productId);
-
-  ctx.answerCbQuery();
-
-  if (!product) {
-    return ctx.reply("❌ Product not found.");
-  }
-
-  const stockCount = getStockCount(productId);
-
-  if (isAreaCodeProduct(product.name)) {
-    const buttons = AREA_CODES.map((areaCode) => [
-      Markup.button.callback(
-        `${areaCode} | Stock: ${getAreaStockCount(productId, areaCode)}`,
-        `area_${product.id}_${areaCode}`
-      )
-    ]);
-
-    buttons.push([Markup.button.callback("⬅️ Back to Products", "buy_product")]);
-
-    return ctx.reply(
-      `📦 Product Details\n\n` +
-        `Name: ${product.name}\n` +
-        `Price: ${Number(product.price).toFixed(2)} USD each\n` +
-        `Total Available Stock: ${stockCount}\n\n` +
-        `Please select area code:`,
-      Markup.inlineKeyboard(buttons)
-    );
-  }
-
-  ctx.reply(
-    `📦 Product Details\n\n` +
-      `Name: ${product.name}\n` +
-      `Price: ${product.price} USD each\n` +
-      `Available Stock: ${stockCount}\n\n` +
-      `Click Buy Now, then send quantity.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("✅ Buy Now", `ask_qty_${product.id}`)],
-      [Markup.button.callback("⬅️ Back to Products", "buy_product")]
-    ])
-  );
+  await ctx.answerCbQuery();
+  await showProductDetails(ctx, Number(ctx.match[1]));
 });
 
-bot.action(/^area_(\d+)_(.+)$/, (ctx) => {
+bot.action(/^area_(\d+)_(.+)$/, async (ctx) => {
   if (blockGuard(ctx)) return;
   createOrGetUser(ctx);
 
@@ -1384,19 +1442,21 @@ bot.action(/^area_(\d+)_(.+)$/, (ctx) => {
     .prepare("SELECT * FROM products WHERE id = ? AND status = 'active'")
     .get(productId);
 
-  ctx.answerCbQuery();
+  await ctx.answerCbQuery();
 
   if (!product) {
-    return ctx.reply("❌ Product not found.");
+    return editOrReply(ctx, "❌ Product not found.", productBackKeyboard());
   }
 
   const stockCount = getAreaStockCount(productId, areaCode);
 
   if (stockCount <= 0) {
-    return ctx.reply(
+    return editOrReply(
+      ctx,
       `❌ Out of Stock\n\n` +
         `Product: ${product.name}\n` +
-        `Area Code: ${areaCode}`
+        `Area Code: ${areaCode}`,
+      productBackKeyboard(productId)
     );
   }
 
@@ -1404,18 +1464,20 @@ bot.action(/^area_(\d+)_(.+)$/, (ctx) => {
   ctx.session.pendingBuyProductId = productId;
   ctx.session.pendingAreaCode = areaCode;
 
-  ctx.reply(
+  await editOrReply(
+    ctx,
     `🛒 Quantity Required\n\n` +
       `Product: ${product.name}\n` +
       `Area Code: ${areaCode}\n` +
       `Price: ${Number(product.price).toFixed(2)} USD each\n` +
       `Available Stock: ${stockCount}\n\n` +
       `Please send quantity using this format:\n\n` +
-      `/qty 5`
+      `/qty 5`,
+    productBackKeyboard(productId)
   );
 });
 
-bot.action(/^ask_qty_(\d+)$/, (ctx) => {
+bot.action(/^ask_qty_(\d+)$/, async (ctx) => {
   if (blockGuard(ctx)) return;
   createOrGetUser(ctx);
 
@@ -1425,29 +1487,35 @@ bot.action(/^ask_qty_(\d+)$/, (ctx) => {
     .prepare("SELECT * FROM products WHERE id = ? AND status = 'active'")
     .get(productId);
 
-  ctx.answerCbQuery();
+  await ctx.answerCbQuery();
 
   if (!product) {
-    return ctx.reply("❌ Product not found.");
+    return editOrReply(ctx, "❌ Product not found.", productBackKeyboard());
   }
 
   const stockCount = getStockCount(productId);
 
   if (stockCount <= 0) {
-    return ctx.reply("❌ Out of Stock\n\nThis product is currently unavailable.");
+    return editOrReply(
+      ctx,
+      "❌ Out of Stock\n\nThis product is currently unavailable.",
+      productBackKeyboard(productId)
+    );
   }
 
   ctx.session = ctx.session || {};
   ctx.session.pendingBuyProductId = productId;
   ctx.session.pendingAreaCode = null;
 
-  ctx.reply(
+  await editOrReply(
+    ctx,
     `🛒 Quantity Required\n\n` +
       `Product: ${product.name}\n` +
       `Price: ${Number(product.price).toFixed(2)} USD each\n` +
       `Available Stock: ${stockCount}\n\n` +
       `Please send quantity using this format:\n\n` +
-      `/qty 5`
+      `/qty 5`,
+    productBackKeyboard(productId)
   );
 });
 
@@ -1826,7 +1894,7 @@ bot.command("refund", (ctx) => {
   );
 });
 
-bot.action("my_orders", (ctx) => {
+bot.action("my_orders", async (ctx) => {
   if (blockGuard(ctx)) return;
   createOrGetUser(ctx);
 
@@ -1836,10 +1904,10 @@ bot.action("my_orders", (ctx) => {
     )
     .all(String(ctx.from.id));
 
-  ctx.answerCbQuery();
+  await ctx.answerCbQuery();
 
   if (orders.length === 0) {
-    return ctx.reply("📦 You have no orders yet.");
+    return editOrReply(ctx, "📦 You have no orders yet.", backToMainKeyboard());
   }
 
   let message = "📦 My Orders\n\n";
@@ -1853,18 +1921,17 @@ bot.action("my_orders", (ctx) => {
       `Date: ${order.created_at}\n\n`;
   }
 
-  ctx.reply(message);
+  await editOrReply(ctx, message, backToMainKeyboard());
 });
 
-bot.action("support", (ctx) => {
+bot.action("support", async (ctx) => {
   if (blockGuard(ctx)) return;
-  ctx.answerCbQuery();
-  ctx.reply("🆘 Support: Contact admin.");
+  await ctx.answerCbQuery();
+  await editOrReply(ctx, "🆘 Support: Contact admin.", backToMainKeyboard());
 });
 
 
 // Render/UptimeRobot health server
-// Render Web Service needs an open HTTP port, otherwise deploy will fail with "No open ports detected"
 const PORT = process.env.PORT || 3000;
 
 http
