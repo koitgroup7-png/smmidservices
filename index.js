@@ -1926,8 +1926,20 @@ bot.action("my_orders", async (ctx) => {
 
 bot.action("support", async (ctx) => {
   if (blockGuard(ctx)) return;
+
   await ctx.answerCbQuery();
-  await editOrReply(ctx, "🆘 Support: Contact admin.", backToMainKeyboard());
+
+  await editOrReply(
+    ctx,
+    `🆘 Support Center\n\n` +
+      `Need help? Please contact admin or visit our channel/website.`,
+    Markup.inlineKeyboard([
+      [Markup.button.url("👤 Contact Admin", "https://t.me/buygv_tn")],
+      [Markup.button.url("📢 Join Channel", "https://t.me/smmidservices")],
+      [Markup.button.url("🌐 Website", "http://www.smmidservices.com/")],
+      [Markup.button.callback("⬅️ Back to Main Menu", "back_main")]
+    ])
+  );
 });
 
 
