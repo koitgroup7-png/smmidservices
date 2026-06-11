@@ -1,0 +1,3 @@
+Syntax check OK: node --check index.js
+Clean chat navigation added: previous customer interface messages are deleted/edited so only latest screen remains.
+Menu button text unchanged.
